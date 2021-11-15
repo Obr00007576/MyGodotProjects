@@ -1,0 +1,234 @@
+[gd_scene load_steps=11 format=2]
+
+[ext_resource path="res://Server/Node2D.gd" type="Script" id=1]
+[ext_resource path="res://MessageLabel.tres" type="Theme" id=2]
+[ext_resource path="res://font/04B_03__.TTF" type="DynamicFontData" id=3]
+
+[sub_resource type="Shader" id=1]
+code = "shader_type canvas_item;
+
+uniform float PI=3.14159265359;
+uniform float TAU=6.28318530718;
+
+varying vec2 v_vTexcoord;
+varying vec4 v_vColour;
+
+//MAIN CONTROLLER UNIFORMS
+uniform float intensity;       //overall effect intensity, 0-1 (no upper limit)
+uniform float time;            //global timer variable
+uniform vec2  resolution;      //screen resolution, vector
+uniform float rngSeed;         //seed offset (changes configuration around)
+
+//TUNING
+uniform float lineSpeed;       //line speed
+uniform float lineDrift;       //horizontal line drifting
+uniform float lineResolution;  //line resolution
+uniform float lineVertShift;   //wave phase offset of horizontal lines
+uniform float lineShift;       //horizontal shift
+uniform float jumbleness;      //amount of \"block\" glitchiness
+uniform float jumbleResolution;//ŕesolution of blocks
+uniform float jumbleShift;     //texture shift by blocks  
+uniform float jumbleSpeed;     //speed of block variation
+uniform float dispersion;      //color channel horizontal dispersion
+uniform float channelShift;    //horizontal RGB shift
+uniform float noiseLevel;      //level of noise
+uniform float shakiness;       //horizontal shakiness
+//
+
+varying vec2 resRatios;
+varying float tm;
+
+//colour extraction
+
+vec4 extractRed(vec4 col){
+    return vec4(col.r, 0., 0., col.a);
+}
+
+vec4 extractGreen(vec4 col){
+    return vec4(0., col.g, 0., col.a);
+}
+
+vec4 extractBlue(vec4 col){
+    return vec4(0., 0., col.b, col.a);
+}
+
+//coord manipulation
+
+float saw(float v, float d){
+    return mod(v, d) * (d - floor(mod(v, d * 2.0)) * (d * 2.0)) + floor(mod(v, d * 2.0)); 
+}
+
+vec2 vec2LockIn(vec2 v){
+    return vec2(saw(v.x, 1.), saw(v.y, 1.));
+}
+
+vec2 shiftX(vec2 vec, float offset){
+    return vec2LockIn(vec2(vec.x + offset, vec.y));
+}
+
+float tMod(float v, float d){
+    return mod(mod(v, d) + d, d); 
+}
+
+float downsample(float v, float res){
+    if (res == 0.0) return 0.0;
+    return floor(v * res) / res;
+}
+
+//RNG function (uses improved version by Andy Gryc)
+
+highp float rand(vec2 co)
+{
+    //highp vec2 _co = co + 1. + rngSeed;
+    highp vec2 _co = vec2(mod(co.x, resolution.x), mod(co.y, resolution.y));
+    highp float a = 12.9898;
+    highp float b = 78.233;
+    highp float c = 43758.5453;
+    highp float dt= dot(_co.xy, vec2(a,b));
+    highp float sn= mod(dt + rngSeed * .0001,3.14);
+    return fract(sin(sn) * c);
+}
+
+//jumble generation
+
+float jumble(vec2 coord, float randOffset, float Resolution){
+    vec2 jumbleSubRes = vec2(Resolution, Resolution);
+    vec2 gridCoords = vec2(downsample(coord.x, jumbleSubRes.x / resRatios.y), downsample(coord.y, jumbleSubRes.y / resRatios.x));
+    vec2 gridCoordsSeed = vec2(downsample(coord.y, jumbleSubRes.x / resRatios.x), downsample(coord.x, jumbleSubRes.y / resRatios.y));
+    vec2LockIn(gridCoords);
+    vec2LockIn(gridCoordsSeed);
+    float shift = rand(randOffset + gridCoords + downsample(tm * .02 + intensity, jumbleSpeed));
+    return ((((shift - .5)) * downsample(intensity, 10.) * jumbleShift) * floor(rand(randOffset + gridCoordsSeed + downsample(tm * .02 + intensity, jumbleSpeed)) + jumbleness));
+}
+void vertex()
+{
+	resRatios = normalize(resolution);
+	tm = abs(time);
+}
+void fragment()
+{
+    vec4 outColour;
+    vec2 coords = v_vTexcoord;
+    
+    //base line shift
+    float dY = downsample(v_vTexcoord.y, 50. * lineResolution);
+    float wave0 = sin((downsample(rand(vec2(dY, dY)) * TAU, 50. * lineResolution) * 80. + tm * lineSpeed) + lineVertShift * TAU);
+    dY = downsample(v_vTexcoord.y, 25. * lineResolution);
+    float wave1 = cos((downsample(rand(vec2(dY, dY)) * TAU, 25. * lineResolution) * 80. + tm * lineSpeed) + lineVertShift * TAU);
+    float driftSin = resolution.y * 2.778;
+    coords = shiftX(coords,(wave0 * (1. + rand(vec2(wave0, wave0)) * shakiness) +
+                            wave1 * (1. + rand(vec2(wave1, wave1)) * shakiness) +
+                            sin((v_vTexcoord.y * (driftSin) + 2. + tm * lineSpeed) + lineVertShift * TAU) * lineDrift + 
+                            rand(coords + tm) * lineSpeed * shakiness + 
+                            cos((v_vTexcoord.y * (driftSin * .1) + 1. + tm * lineSpeed) + lineVertShift * TAU) * lineDrift) * lineShift * intensity);
+    
+    //jumbles
+    coords.y += jumble(coords, 0., jumbleResolution * 100.) * intensity * .25;
+    coords.x += jumble(coords, .25, jumbleResolution * 100.) * intensity * .25;
+    
+    //avoid coord clamping
+    coords = vec2LockIn(coords); 
+    
+    //channel split
+    outColour = extractRed(texture( NORMAL_TEXTURE, shiftX(coords, (channelShift + rand(coords) * dispersion) * intensity))) +
+                extractBlue(texture( NORMAL_TEXTURE, shiftX(coords, -(channelShift + rand(coords) * dispersion) * intensity))) +
+                extractGreen(texture( NORMAL_TEXTURE, coords));
+    
+    //add noise
+    outColour.r *= 1. + (rand(tm * coords * 2.)) * intensity * noiseLevel * .55;
+    outColour.g *= 1. + (rand(tm * coords)) * intensity * noiseLevel * .5;
+    outColour.b *= 1. + (rand(tm * coords * 3.)) * intensity * noiseLevel * .4;
+    
+    //set fragment colour
+    COLOR = v_vColour * outColour;
+}"
+
+[sub_resource type="ShaderMaterial" id=2]
+shader = SubResource( 1 )
+shader_param/PI = 3.14159
+shader_param/TAU = 6.28319
+shader_param/intensity = null
+shader_param/time = null
+shader_param/resolution = null
+shader_param/rngSeed = null
+shader_param/lineSpeed = null
+shader_param/lineDrift = null
+shader_param/lineResolution = null
+shader_param/lineVertShift = null
+shader_param/lineShift = null
+shader_param/jumbleness = null
+shader_param/jumbleResolution = null
+shader_param/jumbleShift = null
+shader_param/jumbleSpeed = null
+shader_param/dispersion = null
+shader_param/channelShift = null
+shader_param/noiseLevel = null
+shader_param/shakiness = null
+
+[sub_resource type="DynamicFont" id=3]
+font_data = ExtResource( 3 )
+
+[sub_resource type="DynamicFont" id=4]
+font_data = ExtResource( 3 )
+
+[sub_resource type="DynamicFont" id=5]
+font_data = ExtResource( 3 )
+
+[sub_resource type="Shader" id=6]
+code = "shader_type canvas_item;
+render_mode unshaded;
+uniform float amberationAmt:hint_range(0,0.01);
+uniform float scalingx;
+uniform float scalingy;
+void fragment()
+{
+	COLOR=vec4(texture(SCREEN_TEXTURE,SCREEN_UV*1.002).r,texture(SCREEN_TEXTURE,SCREEN_UV*0.998).g,texture(SCREEN_TEXTURE,SCREEN_UV).b,1);
+}
+"
+
+[sub_resource type="ShaderMaterial" id=7]
+shader = SubResource( 6 )
+shader_param/amberationAmt = 0.002
+shader_param/scalingx = null
+shader_param/scalingy = null
+
+[node name="Node2D" type="Node2D"]
+material = SubResource( 2 )
+position = Vector2( 7, 0 )
+script = ExtResource( 1 )
+
+[node name="RichTextLabel" type="RichTextLabel" parent="."]
+margin_left = 26.0
+margin_top = 55.4133
+margin_right = 299.0
+margin_bottom = 539.413
+theme = ExtResource( 2 )
+custom_fonts/normal_font = SubResource( 3 )
+text = "USER CONNECTIONS:"
+
+[node name="Messages" type="RichTextLabel" parent="."]
+margin_left = 316.0
+margin_top = 57.0
+margin_right = 747.0
+margin_bottom = 541.0
+theme = ExtResource( 2 )
+custom_fonts/normal_font = SubResource( 4 )
+text = "MESSAGES:"
+scroll_following = true
+
+[node name="ItemList" type="ItemList" parent="."]
+margin_left = 764.0
+margin_top = 57.0
+margin_right = 990.0
+margin_bottom = 542.0
+custom_fonts/font = SubResource( 5 )
+
+[node name="ColorRect" type="ColorRect" parent="."]
+material = SubResource( 7 )
+margin_left = -65.8644
+margin_top = -70.9561
+margin_right = 1152.14
+margin_bottom = 673.044
+__meta__ = {
+"_edit_use_anchors_": false
+}
